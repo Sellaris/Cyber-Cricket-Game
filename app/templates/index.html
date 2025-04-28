@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyber Cricket Game (赛博斗蛐蛐)</title>
+    <style>
+        /* 基础样式 */
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #333;
+        }
+        .tabs {
+            display: flex;
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 10px 20px;
+            background-color: #ddd;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+        .tab.active {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .content {
+            display: none;
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .content.active {
+            display: block;
+        }
+        .ai-list {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .ai-list th, .ai-list td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        .ai-list th {
+            background-color: #f2f2f2;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            margin-right: 5px;
+        }
+        .btn-cancel {
+            background-color: #f44336;
+        }
+        .btn-save {
+            background-color: #2196F3;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+        }
+        .modal-content {
+            background-color: #fefefe;
+            margin: 10% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 400px;
+            border-radius: 5px;
+        }
+        .prompt-editor {
+            width: 100%;
+            height: 200px;
+            margin-bottom: 10px;
+        }
+        .log-container {
+            height: 300px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            background-color: #f9f9f9;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Cyber Cricket Game (赛博斗蛐蛐)</h1>
+        </div>
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('ai-manage')">AI 管理</div>
+            <div class="tab" onclick="switchTab('game-sim')">游戏模拟</div>
+        </div>
+        <div class="content active" id="ai-manage-content">
+            <table class="ai-list">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>APIKEY</th>
+                        <th>APIBASE</th>
+                        <th>Score</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="ai-list-body">
+                    <!-- AI 列表将通过 JavaScript 动态加载 -->
+                </tbody>
+            </table>
+            <button class="btn" onclick="openAddAIDialog()">添加 AI</button>
+            <button class="btn" onclick="refreshAIList()">刷新列表</button>
+            <div id="modal-add-ai" class="modal">
+                <div class="modal-content">
+                    <h2>添加 AI</h2>
+                    <input type="text" id="ai-name" placeholder="AI 名称" style="width: 100%; margin-bottom: 10px;">
+                    <input type="text" id="ai-apikey" placeholder="API Key" style="width: 100%; margin-bottom: 10px;">
+                    <input type="text" id="ai-apibase" placeholder="API Base" style="width: 100%; margin-bottom: 10px;">
+                    <div>
+                        <button class="btn btn-save" onclick="saveNewAI()">保存</button>
+                        <button class="btn btn-cancel" onclick="closeModal('modal-add-ai')">取消</button>
+                    </div>
+                </div>
+            </div>
+            <div id="modal-edit-ai" class="modal">
+                <div class="modal-content">
+                    <h2>修改 AI</h2>
+                    <input type="text" id="edit-ai-id" style="display: none;">
+                    <input type="text" id="edit-ai-name" placeholder="AI 名称" style="width: 100%; margin-bottom: 10px;">
+                    <input type="text" id="edit-ai-apikey" placeholder="API Key" style="width: 100%; margin-bottom: 10px;">
+                    <input type="text" id="edit-ai-apibase" placeholder="API Base" style="width: 100%; margin-bottom: 10px;">
+                    <div>
+                        <button class="btn btn-save" onclick="saveEditedAI()">保存</button>
+                        <button class="btn btn-cancel" onclick="closeModal('modal-edit-ai')">取消</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="content" id="game-sim-content">
+            <div>
+                <textarea id="prompt-text" class="prompt-editor" placeholder="提示词（可修改）">{{ prompt }}</textarea>
+                <button class="btn" onclick="savePrompt()">保存提示词</button>
+            </div>
+            <div>
+                <button class="btn" onclick="startSimulation()">开始模拟</button>
+            </div>
+            <div id="ai-panels" style="display: flex; gap: 16px; margin-bottom: 10px;"></div>
+            <div class="log-container" id="log-text">
+                <!-- 模拟日志将通过 JavaScript 动态加载 -->
+            </div>
+        </div>
+    </div>
+    <script src="/static/js/script.js"></script>
+    <script>
+    function switchTab(tabName) {
+        const tabs = document.querySelectorAll('.tab');
+        const contents = document.querySelectorAll('.content');
+        tabs.forEach(tab => tab.classList.remove('active'));
+        contents.forEach(content => content.classList.remove('active'));
+        if(tabName === 'ai-manage') {
+            tabs[0].classList.add('active');
+            contents[0].classList.add('active');
+        } else {
+            tabs[1].classList.add('active');
+            contents[1].classList.add('active');
+        }
+    }
+    </script>
+</body>
+</html>
