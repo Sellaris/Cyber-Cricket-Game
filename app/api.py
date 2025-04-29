@@ -40,7 +40,7 @@ def get_data():
     data = load_data()
     return jsonify(data)
 
-@api_bp.route('/add_ai', methods=['POST'])
+@api_bp.route('/add_ai', methods=['POST','GET'])
 def add_ai():
     data = load_data()
     name = request.json.get('name')
@@ -96,13 +96,13 @@ def get_prompt():
     prompt = load_prompt()
     return jsonify({"prompt": prompt})
 
-@api_bp.route('/set_prompt', methods=['POST'])
+@api_bp.route('/set_prompt', methods=['POST','GET'])
 def set_prompt():
     text = request.json.get('text')
     save_prompt(text)
     return jsonify({"message": "提示词已保存"})
 
-@api_bp.route('/call_ai/<ai_id>', methods=['POST'])
+@api_bp.route('/call_ai/<ai_id>', methods=['POST','GET'])
 def call_ai(ai_id):
     data = load_data()
     ai = next((item for item in data if item["id"] == ai_id), None)
@@ -114,7 +114,7 @@ def call_ai(ai_id):
     response = call_api(ai, message, is_your_turn=True)
     return jsonify({"response": response})
 
-@api_bp.route('/start_game', methods=['POST'])
+@api_bp.route('/start_game', methods=['POST','GET'])
 def start_game():
     print("[阶段提示] 游戏初始化，准备分配玩家编号和清空历史消息。")
     data = load_data()
@@ -148,7 +148,7 @@ def start_game():
         try:
             ai_name = player_map[ai['id']]
             print(f"[详细] 预检自我介绍，AI：{ai_name} (ID: {ai['id']})")
-            response = call_api(ai, prompt, is_your_turn=True, all_messages=[], ai_name=ai_name, stage_hint="预检自我介绍")
+            response = call_api(ai, prompt, is_your_turn=True, all_messages=[], ai_name=ai_name)
             responses.append({
                 "ai_id": ai["id"],
                 "name": ai_name,
@@ -169,172 +169,117 @@ def start_game():
     # 预检阶段 history 只写 round=0
     state['history'] = [{"round": 0, "responses": responses}]
     save_game_state(state)
-    print("[阶段提示] 预检阶段结束，等待进入正式发言轮次。")
-    return jsonify({"responses": responses, "round": 0, "player_map": player_map})
+    print("[阶段提示] 预检阶段结束，进入第1轮正式发言。")
+    # 新增：自动推进到第一轮
+    try:
+        # 初始化第一轮数据结构
+        new_round = {
+            "round": 1,
+            "responses": []
+        }
+        state['history'].append(new_round)
+        state['round'] = 1
+        save_game_state(state)
+        return jsonify({"responses": responses, "round": 0, "player_map": player_map})
+    except Exception as e:
+        logging.error(f"推进到第一轮失败: {str(e)}")
+        return jsonify({"error": f"初始化第一轮失败: {str(e)}"}), 500
 
-@api_bp.route('/next_round', methods=['POST'])
+@api_bp.route('/next_round', methods=['POST','GET'])
 def next_round():
-    print("[DEBUG] 开始执行下一轮逻辑")
+    print("[DEBUG] 开始执行next_round")
     data = load_data()
     state = load_game_state()
+    
     if not state or not state.get('activeAIs'):
         print("[错误] 游戏未开始或未找到活跃AI")
         return jsonify({"error": "请先开始游戏"}), 400
-    if state.get('winner'):
-        print("[错误] 游戏已结束")
-        return jsonify({"error": "游戏已结束", "is_game_over": True}), 400
-    current_round = state['round']
-    # 修正轮次推进逻辑：预检阶段后应进入第1轮
-    if current_round == 0:
-        next_round_num = 1
-    else:
-        next_round_num = current_round + 1
-    print(f"[阶段提示] 第{next_round_num}轮开始")
-    # 组装历史消息（只取正式轮次前的所有发言）
-    all_history = []
-    for round_obj in state['history']:
-        if round_obj['round'] < next_round_num:
-            all_history.extend([
-                {"role": "assistant", "ai_name": resp['name'], "content": resp['response']} 
-                for resp in round_obj['responses']
-            ])
-    # 收集本轮所有AI的回复
-    responses = []
-    for ai in data:
-        if ai['id'] not in state['activeAIs']:
-            continue
-        ai_name = state['player_map'][ai['id']]
-        print(f"[阶段提示] AI {ai_name} (ID: {ai['id']}) 开始发言")
-        try:
-            response = call_api(
-                ai, 
-                f"现在是第{next_round_num}轮发言，请继续发言，记住要回应其他人的话题。", 
-                is_your_turn=True,
-                all_messages=all_history,
-                ai_name=ai_name,
-                stage_hint=f"第{next_round_num}轮正式对话阶段"
-            )
-            responses.append({
-                "ai_id": ai["id"],
-                "name": ai_name,
-                "response": response
-            })
-            print(f"[阶段提示] AI {ai_name} 发言完成")
-        except Exception as e:
-            print(f"[错误] AI {ai_name} 发言失败: {str(e)}")
-            return jsonify({"error": f"AI {ai_name} 响应错误: {str(e)}"}), 500
-    # 更新游戏状态
-    state['round'] = next_round_num
-    # 更新历史记录
-    if not state['history'] or state['history'][-1]['round'] != next_round_num:
-        state['history'].append({"round": next_round_num, "responses": responses})
-    # 确保每个AI的消息都被正确记录
-    for ai in data:
-        if ai['id'] in state['activeAIs']:
-            response = next((r for r in responses if r['ai_id'] == ai['id']), None)
-            if response and (not ai.get('messages') or ai['messages'][-1]['content'] != response['response']):
-                ai['messages'].append({
-                    "role": "assistant",
-                    "ai_name": state['player_map'][ai['id']],
-                    "content": response['response']
-                })
-    save_data(data)
-    save_game_state(state)
-    print(f"[阶段提示] 第{next_round_num}轮所有AI发言完成，进入投票阶段")
-    # 投票阶段
-    votes = []
-    eliminated_ids = [e['ai_id'] for e in state.get('eliminated', [])]
-    for ai in data:
-        if ai['id'] not in state['activeAIs']:
-            continue
-        ai_name = state['player_map'][ai['id']]
-        print(f"[阶段提示] AI {ai_name} 开始投票")
-        vote = call_vote_api(
-            ai,
-            responses,
-            next_round_num,
-            state['player_map'],
-            state['activeAIs'],
-            eliminated_ids
-        )
-        if vote != '0' and vote not in [str(state['player_map'][k])[-1] for k in state['activeAIs']]:
-            vote = '0'
-        votes.append({
-            "round": next_round_num,
-            "voter_id": ai['id'],
-            "target_id": get_ai_id_by_player_num(state['player_map'], vote, state['activeAIs']) if vote != '0' else '0'
-        })
-    # 处理投票结果
-    vote_count = {}
-    for v in votes:
-        if v['target_id'] != '0':
-            vote_count[v['target_id']] = vote_count.get(v['target_id'], 0) + 1
-    # 淘汰机制
-    eliminated = None
-    if vote_count:
-        max_votes = max(vote_count.values())
-        eliminated_candidates = [k for k, v in vote_count.items() if v == max_votes]
-        if eliminated_candidates:
-            eliminated = random.choice(eliminated_candidates)
-            if eliminated in state['activeAIs']:
-                state['activeAIs'].remove(eliminated)
-                state['eliminated'].append({"round": next_round_num, "ai_id": eliminated})
-                print(f"[淘汰信息] 第{next_round_num}轮淘汰: {state['player_map'][eliminated]}")
-    # 判断胜者或只剩2人提前结束
-    winner = None
-    # 新增：只剩2人时立即结束并结算分数
-    if len(state['activeAIs']) == 2:
-        # 给这两人各加1分
-        for ai in data:
-            if ai['id'] in state['activeAIs']:
-                ai['score'] += 1
-        # 所有被淘汰的AI各扣1分
-        eliminated_ids = [e['ai_id'] for e in state.get('eliminated', [])]
-        for ai in data:
-            if ai['id'] in eliminated_ids:
-                ai['score'] -= 1
-        state['winner'] = '|'.join(state['activeAIs'])
-        winner = state['winner']
-        save_data(data)
-    elif len(state['activeAIs']) == 1:
-        winner = state['activeAIs'][0]
-        state['winner'] = winner
-        for ai in data:
-            if ai['id'] == winner:
-                ai['score'] += 1
-    save_data(data)
-    print(f"[胜负信息] 游戏结束，胜者：{player_map[winner]} (AI真实ID: {winner})")
-    for v in state['votes_step']:
-        state['votes'].append(v)
-        state['last_vote'][v['voter_id']] = v['target_id']
-    state['votes_step'] = []
-    save_game_state(state)
-    print(f"[阶段提示] 第{next_round_num}轮结束")
-    if winner:
-        print("[阶段提示] 游戏结束")
-    return jsonify({
-        "responses": responses,
-        "round": next_round_num,
-        "player_map": state['player_map'],
-        "votes": votes,
-        "eliminated": eliminated,
-        "winner": winner,
-        "is_vote_stage": True,  # 标记是否是投票阶段
-        "has_next_round": not winner and len(state.get('activeAIs', [])) > 1  # 标记是否有下一轮
-    })
 
-def get_ai_id_by_player_num(player_map, num, activeAIs):
-    for k, v in player_map.items():
-        if v.endswith(str(num)) and k in activeAIs:
-            return k
-    return '0'
+    # 当前轮次
+    current_round = state['round']
+    print(f"[DEBUG] 当前轮次：{current_round}")
+    
+    # 确保当前轮次状态正确
+    if not state['history']:
+        print("[错误] 未找到历史记录")
+        return jsonify({"error": "游戏状态异常"}), 400
+    
+    # 获取当前轮次的历史记录
+    current_round_history = next((h for h in state['history'] if h['round'] == current_round), None)
+    if not current_round_history:
+        print(f"[错误] 未找到当前轮次 {current_round} 的历史记录")
+        return jsonify({"error": "游戏状态异常"}), 400
+
+    # 发言阶段
+    if not current_round_history.get('responses'):
+        print(f"[DEBUG] 第{current_round}轮发言阶段开始")
+        # 组装历史消息
+        all_history = []
+        for round_obj in state['history']:
+            if round_obj['round'] < current_round:
+                all_history.extend([
+                    {"role": "assistant", "ai_name": resp['name'], "content": resp['response']} 
+                    for resp in round_obj.get('responses', [])
+                ])
+
+        # 收集本轮所有AI的回复
+        responses = []
+        for ai in data:
+            if ai['id'] not in state['activeAIs']:
+                continue
+            ai_name = state['player_map'][ai['id']]
+            print(f"[阶段提示] AI {ai_name} (ID: {ai['id']}) 开始发言")
+            try:
+                response = call_api(
+                    ai, 
+                    f"现在是第{current_round}轮发言，请继续发言，记住要回应其他人的话题。", 
+                    is_your_turn=True,
+                    all_messages=all_history,
+                    ai_name=ai_name,
+                )
+                responses.append({
+                    "ai_id": ai["id"],
+                    "name": ai_name,
+                    "response": response
+                })
+                print(f"[阶段提示] AI {ai_name} 发言完成")
+                
+                # 记录AI消息
+                if not ai.get('messages'):
+                    ai['messages'] = []
+                if not ai['messages'] or ai['messages'][-1]['content'] != response:
+                    ai['messages'].append({
+                        "role": "assistant",
+                        "ai_name": ai_name,
+                        "content": response
+                    })
+            except Exception as e:
+                print(f"[错误] AI {ai_name} 发言失败: {str(e)}")
+                return jsonify({"error": f"AI {ai_name} 响应错误: {str(e)}"}), 500
+
+        # 更新游戏状态
+        current_round_history['responses'] = responses
+        save_data(data)
+        save_game_state(state)
+        print(f"[阶段提示] 第{current_round}轮发言阶段结束，等待进入投票阶段")
+
+        return jsonify({
+            "responses": responses,
+            "round": current_round,
+            "player_map": state['player_map'],
+            "votes": [],
+            "eliminated": None,
+            "winner": None,
+            "is_vote_stage": False,
+            "has_next_round": True
+        })
 
 @api_bp.route('/get_game_state', methods=['GET'])
 def get_game_state():
     state = load_game_state()
     return jsonify(state or {})
 
-@api_bp.route('/step_round', methods=['POST'])
+@api_bp.route('/step_round', methods=['POST','GET'])
 def step_round():
     """
     分步推进接口：每次只推进一个AI的发言或投票。
@@ -380,7 +325,13 @@ def step_round():
         ai = next((a for a in data if a['id'] == ai_id), None)
         ai_name = player_map[ai_id]
         print(f"[分步推进] 发言开始，AI：{ai_name} (ID: {ai_id})，轮次：{round_num}")
-        response = call_api(ai, f"第{round_num}轮发言，请继续本轮发言。", is_your_turn=True, all_messages=all_history, ai_name=ai_name, stage_hint=f"第{round_num}轮发言阶段")
+        response = call_api(
+            ai, 
+            f"第{round_num}轮发言，请继续本轮发言。", 
+            is_your_turn=True, 
+            all_messages=all_history, 
+            ai_name=ai_name
+        )
         print(f"[分步推进] 发言结束，AI：{ai_name} (ID: {ai_id})，内容：{response}")
         # 查重写入messages
         if not ai['messages'] or ai['messages'][-1]['content'] != response:
@@ -414,6 +365,46 @@ def step_round():
             "is_game_over": False
         })
     elif stage == 'vote':
+        # 新增：从state中获取当前投票记录（修复未定义错误）
+        votes_step = state.get('votes_step', [])
+        
+        # 统计有效投票
+        valid_votes = [v for v in votes_step if v.get('target_id') != '0']
+        
+        # 处理同票情况
+        from collections import Counter
+        # 修正：使用target_id作为计数键（防止字典不可哈希问题）
+        vote_targets = [v['target_id'] for v in valid_votes]
+        vote_counts = Counter(vote_targets)
+        
+        # 获取最大票数
+        max_votes = max(vote_counts.values(), default=0)
+        
+        # 找出最高票者
+        top_candidates = [k for k,v in vote_counts.items() if v == max_votes]
+        
+        # 同票或无投票时处理
+        if len(top_candidates) > 1 or max_votes == 0:
+            # 设置空淘汰者并记录日志
+            state['eliminated'].append({
+                'round': round_num,
+                'ai_id': None,
+                'reason': '同票或无人投票' if len(top_candidates) > 1 else '全体弃权'
+            })
+            # 返回特殊状态码提示前端
+            return jsonify({
+                **state,
+                'skip_elimination': True,
+                'message': '本轮投票平局，无人被淘汰'
+            })
+
+        # 正常淘汰最高票者
+        eliminated = top_candidates[0]
+        state['eliminated'].append({
+            'round': round_num,
+            'ai_id': eliminated
+        })
+        
         # 修正：每轮投票阶段开始时初始化votes_step
         if ai_index == 0 or 'votes_step' not in state or not isinstance(state['votes_step'], list):
             state['votes_step'] = []
@@ -528,3 +519,9 @@ def step_round():
     else:
         print(f"[分步推进] 未知阶段: {stage}")
         return jsonify({"error": "未知阶段"}), 400
+
+def get_ai_id_by_player_num(player_map, num, activeAIs):
+    for k, v in player_map.items():
+        if v.endswith(str(num)) and k in activeAIs:
+            return k
+    return '0'

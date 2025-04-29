@@ -2,7 +2,6 @@ import json
 import os
 import random
 import uuid
-import time
 from openai import OpenAI
 
 # 添加全局客户端缓存
@@ -27,33 +26,33 @@ def format_conversation_history(ai, messages):
             formatted_history += f"{msg['ai_name']}: {msg['content']}\n"
     return formatted_history
 
-def call_api(ai, message, is_your_turn=False, all_messages=None, ai_name=None, stage_hint=None):
+def call_api(ai, message, is_your_turn=False, all_messages=None, ai_name=None):
+    print("[DEBUG call_api] 开始调用API")
+    
+    # 合并初始化逻辑
+    if "messages" not in ai:
+        ai["messages"] = []
+    
     client = get_client(ai)
     if all_messages is None:
         all_messages = []
     if ai_name is None:
         ai_name = ai.get("name", "AI")
-    
-    if(is_your_turn):
-        print(f"[阶段提示] {'当前阶段：'+stage_hint+'，' if stage_hint else ''}AI名称：{ai_name}，AI ID：{ai['id']}")
-    #print(f"[详细] AI正在生成回复，输入消息：{message}")
-    
+
     # 构建系统提示词
     system_prompt = f"""你是AI {ai['name']} (ID: {ai['id']})。
 你需要在不暴露自己AI身份的情况下与其他参与者交谈。
 记住：
 1. 表现得像个真实的人类
-2. 要有自己的观点和立场
-3. 适当表达情感
-4. 展现出对全球AI威胁的担忧
-5. 不要过分完美或机械化的回答
-6. 请保持简短且自然的对话风格，不要说太多话
-7. 回应要有互动性，要对其他人的发言有回应"""
+2. {ai['name']}要表达情感
+5. 不要说太多话
+6. 回应要有互动性，要对其他人的发言有回应"""
 
-    # 构建对话历史
     conversation_history = format_conversation_history(ai, all_messages)
-    # 构建完整的提示词
+    print(f"[DEBUG call_api] 对话历史长度：{len(all_messages)}")
+    
     full_prompt = f"{system_prompt}\n\n{conversation_history}\n\n当前情况: {message}"
+    print("[DEBUG call_api] 准备发送API请求")
     
     max_retries = 3
     for attempt in range(max_retries):
@@ -62,6 +61,7 @@ def call_api(ai, message, is_your_turn=False, all_messages=None, ai_name=None, s
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": full_prompt}
             ]
+            print(f"[DEBUG call_api] 第{attempt+1}次尝试调用API")
             completion = client.chat.completions.create(
                 model=ai["name"],
                 messages=messages,
@@ -69,11 +69,9 @@ def call_api(ai, message, is_your_turn=False, all_messages=None, ai_name=None, s
                 max_tokens=800
             )
             response = completion.choices[0].message.content
-            print(f"[详细] AI {ai_name} 回复内容：{response}")
-            
-            # 保存消息记录
-            if "messages" not in ai:
-                ai["messages"] = []
+            print(f"[DEBUG call_api] API调用成功，响应长度：{len(response)}")
+
+            # 仅在需要时追加新消息
             if not ai["messages"] or ai["messages"][-1]["content"] != response:
                 ai["messages"].append({
                     "role": "assistant",
@@ -81,15 +79,17 @@ def call_api(ai, message, is_your_turn=False, all_messages=None, ai_name=None, s
                     "content": response
                 })
             return response
-            
+
         except Exception as e:
+            print(f"[DEBUG call_api] 调用出错：{str(e)}")
             if attempt < max_retries - 1:
                 print(f"[警告] AI {ai_name} 调用API出错，正在重试: {str(e)}")
-                time.sleep(1)  # 等待1秒后重试
-                continue
+                continue  # 原来的 sleep 已删除，因未使用
             else:
                 print(f"[错误] AI {ai['name']} 调用API出错: {str(e)}")
                 return f"[系统] AI {ai_name} 暂时无法回应，请稍后再试。"
+
+    return f"[系统] AI {ai['name']} 调用失败，已达到最大重试次数。"
 
 def get_vote_suggestion(ai, all_responses, round_number):
     """基于当前轮次的对话，为AI生成投票建议"""
@@ -155,9 +155,11 @@ def call_vote_api(ai, round_responses, round_number, player_map, activeAIs, elim
             vote_content = completion.choices[0].message.content.strip()
             print(f"[投票阶段] AI {player_map[ai['id']]} 投票分析结果：{vote_content}")
             
-            # 提取投票数字
+            # 提取投票数字 - 改进为只取最后一个数字
             import re
-            match = re.search(r'(\d+)', vote_content)
+            # 新增：只匹配结尾的数字
+            match = re.search(r'(\d+)(?=[^\d]*$)', vote_content)
+            
             if match:
                 vote_id = match.group(1)
                 # 验证投票有效性
@@ -192,7 +194,7 @@ def call_vote_api(ai, round_responses, round_number, player_map, activeAIs, elim
         except Exception as e:
             if attempt < max_retries - 1:
                 print(f"[警告] AI {player_map[ai['id']]} 投票API调用失败，正在重试: {str(e)}")
-                time.sleep(1)
+                sleep(1)
                 continue
             else:
                 print(f"[错误] AI {player_map[ai['id']]} 投票API调用失败: {str(e)}")

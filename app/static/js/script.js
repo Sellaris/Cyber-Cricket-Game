@@ -14,51 +14,14 @@ function startSimulation() {
         appendLog("游戏已经在进行中！");
         return;
     }
-    // 清空日志，重置状态（不直接清空AI面板，后续用renderAIPanels刷新）
     clearLog();
     processStage = '';
     processAI = '';
     processRound = 0;
     gameInProgress = false;
-    // 重新请求后端，进入预检
-    fetch('/start_game', {
-        method: 'POST'
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.error) {
-            appendLog("错误: " + data.error);
-            return;
-        }
-        gameInProgress = true;
-        // 预检阶段显示为第0轮
-        appendLog("========== 预检阶段 (第0轮) ==========");
-        // 先拉取一次最新状态，确保AI面板和日志同步
-        renderGameState();
-        // 追加预检发言到AI面板
-        data.responses.forEach(response => {
-            appendLog(`${response.name}: ${response.response}`);
-            updateAIPanel(response.ai_id, response.name, response.response);
-        });
-        // 预检阶段结束后，自动进入第一轮
-        setTimeout(() => {
-            appendLog("========== 第1轮开始 ==========");
-            nextRound();
-        }, 800);
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        appendLog("发生错误: " + error);
-    });
-}
 
-// 进入下一轮
-function nextRound() {
-    if (!gameInProgress) {
-        console.log("游戏尚未开始，请先点击开始模拟！");
-        return;
-    }
-    fetch('/next_round', {
+    console.log("[startSimulation] 开始调用start_game");
+    fetch('/start_game', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
     })
@@ -66,48 +29,161 @@ function nextRound() {
     .then(data => {
         if (data.error) {
             appendLog("错误: " + data.error);
-            if (data.is_game_over) gameInProgress = false;
-            renderGameState();
             return;
         }
-        // 输出本轮所有AI发言
+        console.log("[startSimulation] start_game返回:", data);
+        gameInProgress = true;
+        // 预检阶段显示为第0轮
+        appendLog("========== 预检阶段 (第0轮) ==========");
+        // 输出预检发言
         if (data.responses && data.responses.length > 0) {
-            appendLog(`\n========== 第${data.round}轮 ==========`);
-            data.responses.forEach(resp => {
-                appendLog(`${resp.name}: ${resp.response}`);
+            data.responses.forEach(response => {
+                appendLog(`${response.name}: ${response.response}`);
             });
-        }
-        // 输出投票
-        if (data.votes && data.votes.length > 0) {
-            appendLog("\n----- 投票阶段 -----");
-            data.votes.forEach(v => {
-                let voter = data.player_map[v.voter_id];
-                let target = v.target_id === '0' ? '弃权' : (data.player_map[v.target_id] || v.target_id);
-                appendLog(`${voter} 投票给 ${target}`);
-            });
-        }
-        // 淘汰信息
-        if (data.eliminated) {
-            let eliminatedName = data.player_map && data.eliminated in data.player_map ? data.player_map[data.eliminated] : data.eliminated;
-            appendLog(`\n${eliminatedName} 被淘汰了。`);
-        }
-        // 胜负
-        if (data.winner) {
-            let winnerName = data.player_map ? data.player_map[data.winner] : data.winner;
-            appendLog(`\n游戏结束！胜者是: ${winnerName}`);
-            gameInProgress = false;
         }
         renderGameState();
-        // 自动进入下一轮
-        if (data.has_next_round) {
-            setTimeout(() => nextRound(), 1200);
+
+        // 直接进入发言阶段
+        setTimeout(() => {
+            processStage = '发言阶段';
+            processRound = 1;
+            // 显式请求下一轮数据
+            fetch('/next_round', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ round: 1 })
+            })
+            .then(r => r.json())
+            .then(() => stepThroughAISpeak(0, 'speak', 1));
+        }, 1000);
+    })
+    .catch(error => {
+        console.error('[startSimulation] error:', error);
+        appendLog("发生错误: " + error);
+        gameInProgress = false;
+    });
+}
+
+// 统一处理游戏阶段
+function handleGameStage(stageType, aiIndex, round=processRound) {
+    const totalActiveAIs = activeAIs.length;
+    
+    fetch('/step_round', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            stage: stageType,
+            ai_index: aiIndex,
+            round: round
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            appendLog("错误: " + data.error);
+            if (data.is_game_over) {
+                gameInProgress = false;
+            }
+            renderGameState();
+            
+            // 强制推进流程
+            if (aiIndex >= totalActiveAIs - 1 && !data.is_game_over) {
+                console.log(`[流程推进] 异常恢复：强制进入${stageType === 'vote' ? '新轮次' : '投票阶段'}`);
+                setTimeout(() => handleNextStage(stageType, round), 1500);
+            }
+            return;
+        }
+
+        // 显示操作
+        if (stageType === 'speak') {
+            updateAIPanel(data.ai_id, data.ai_name, data.response);
+        } else {
+            appendLog(`${data.ai_name} 投票给 ${data.target_name}`);
+        }
+
+        if (stageType === 'vote') {
+            if (data.skip_elimination) {
+                appendLog(`[系统] 本轮投票平局，${data.message}`);
+            } else if (data.eliminated_ai) {
+                appendLog(`${data.target_name} 被淘汰`);
+            }
+        }
+        
+        // 流程推进
+        if (aiIndex < totalActiveAIs - 1) {
+            setTimeout(() => 
+                handleGameStage(stageType, aiIndex + 1, round), 
+                stageType === 'speak' ? 800 : 1000
+            );
+        } else {
+            // 阶段转换
+            setTimeout(() => {
+                if (!gameInProgress) return;
+                
+                if (stageType === 'speak') {
+                    // 进入投票阶段
+                    processStage = '投票阶段';
+                    stepThroughAIVote(0, round);
+                } else {
+                    // 完成一轮
+                    appendLog(`\n========== 第${round}轮结束 ==========\n`);
+                    // 检查游戏状态
+                    fetch('/get_game_state')
+                        .then(r => r.json())
+                        .then(state => {
+                            if (state.winner || state.activeAIs.length <= 1) {
+                                gameInProgress = false;
+                                appendLog(state.winner ? `胜者：${state.player_map[state.winner]}` : '平局！');
+                                renderGameState();
+                                return;
+                            }
+                            
+                            // 开始新轮次
+                            appendLog(`\n========== 第${round+1}轮开始 ==========\n`);
+                            processStage = '发言阶段';
+                            processRound = round + 1;
+                            stepThroughAISpeak(0, 'speak', round + 1);
+                        });
+                }
+            }, stageType === 'speak' ? 1200 : 1500);
         }
     })
     .catch(error => {
-        console.error('Error:', error);
-        appendLog("发生错误: " + error);
+        console.error(`[${stageType}] error:`, error);
+        appendLog(`${stageType === 'speak' ? '发言' : '投票'}错误: ` + error);
+        
+        // 降级处理
+        if (aiIndex >= totalActiveAIs - 1) {
+            console.warn("[降级模式] 网络异常，尝试自动推进到下一阶段");
+            setTimeout(() => {
+                if (gameInProgress) handleNextStage(stageType, round);
+            }, stageType === 'speak' ? 2000 : 2500);
+        }
         renderGameState();
     });
+}
+
+// 统一流程推进
+function handleNextStage(currentStageType, round) {
+    if (currentStageType === 'speak') {
+        processStage = '投票阶段';
+        stepThroughAIVote(0, round);
+    } else {
+        appendLog(`\n========== 第${round+1}轮开始 ==========\n`);
+        processStage = '发言阶段';
+        processRound = round + 1;
+        stepThroughAISpeak(0, 'speak', round + 1);
+    }
+}
+
+// 新增逐步处理发言函数
+function stepThroughAISpeak(aiIndex, stage='speak', round=processRound) {
+    handleGameStage(stage, aiIndex, round);
+}
+
+// 新增逐步处理投票的函数
+function stepThroughAIVote(aiIndex, round) {
+    handleGameStage('vote', aiIndex, round);
 }
 
 // 拉取并渲染当前游戏状态
